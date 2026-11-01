@@ -79,7 +79,7 @@ enum MaskPainter {
     private static func softGradient(intensity: CGFloat, inverted: Bool) -> CGGradient {
         let space = CGColorSpaceCreateDeviceGray()
         let levels: [CGFloat] = [intensity, intensity * 0.85, intensity * 0.35, 0].map { inverted ? 1 - $0 : $0 }
-        let comps = levels.flatMap { [$0, 1] }
+        let comps: [CGFloat] = levels.flatMap { level -> [CGFloat] in [level, 1] }
         return CGGradient(colorSpace: space, colorComponents: comps, locations: [0, 0.45, 0.8, 1], count: 4)!
     }
 
