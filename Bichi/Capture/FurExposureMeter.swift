@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import CoreVideo
 import simd
 
@@ -71,7 +72,7 @@ enum FurFrameSampler {
                     let cb = Float(cp[ci]) - 128, cr = Float(cp[ci + 1]) - 128
                     let yf = Float(luma)
                     let rgb = SIMD3<Float>(yf + 1.5748 * cr, yf - 0.1873 * cb - 0.4681 * cr, yf + 1.8556 * cb) / 255
-                    bright += simd_pow(simd_clamp(rgb, .zero, .one), SIMD3(repeating: 2.2))
+                    bright += componentPow(simd_clamp(rgb, .zero, .one), 2.2)
                     brightN += 1
                 }
             }
@@ -119,8 +120,12 @@ enum VisionGeometry {
     static func neutralisingGains(furRGB: SIMD3<Float>, current: SIMD3<Float>, maxGain: Float, damping: Float = 0.8) -> SIMD3<Float> {
         let g = max(furRGB.y, 1e-4)
         let corr = SIMD3<Float>(g / max(furRGB.x, 1e-4), 1, g / max(furRGB.z, 1e-4))
-        var gains = current * simd_pow(corr, SIMD3(repeating: damping))
+        var gains = current * componentPow(corr, damping)
         gains /= gains.min()
         return simd_clamp(gains, SIMD3(repeating: 1), SIMD3(repeating: maxGain))
     }
+}
+
+private func componentPow(_ v: SIMD3<Float>, _ e: Float) -> SIMD3<Float> {
+    SIMD3(pow(v.x, e), pow(v.y, e), pow(v.z, e))
 }
