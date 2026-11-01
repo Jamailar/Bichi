@@ -1,0 +1,54 @@
+name: Bichi
+options:
+  bundleIdPrefix: com.jamailar
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: ""
+targets:
+  Bichi:
+    type: application
+    platform: iOS
+    sources:
+      - path: Bichi
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jamailar.bichi
+        PRODUCT_NAME: Bichi
+        TARGETED_DEVICE_FAMILY: "1"
+        # Core Image Metal kernels (FurKernels.ci.metal)
+        MTL_COMPILER_FLAGS: "-fcikernel"
+        MTLLINKER_FLAGS: "-cikernel"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: 白狗相机
+        INFOPLIST_KEY_NSCameraUsageDescription: 用于拍摄狗狗照片，并在拍摄时针对白色毛发测光。
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: 用于把修复后的照片保存到相册。
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_UIUserInterfaceStyle: Dark
+  BichiTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: BichiTests
+    dependencies:
+      - target: Bichi
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Bichi.app/Bichi"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  Bichi:
+    build:
+      targets:
+        Bichi: all
+        BichiTests: [test]
+    test:
+      targets:
+        - BichiTests

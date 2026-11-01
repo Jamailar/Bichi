@@ -1,0 +1,37 @@
+name: iOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate
+      - name: Pick simulator
+        id: sim
+        run: |
+          udid=$(xcrun simctl list devices available -j | python3 -c '
+          import json,sys
+          d=json.load(sys.stdin)["devices"]
+          ids=[x["udid"] for k,v in d.items() if "iOS" in k for x in v if x["name"].startswith("iPhone")]
+          print(ids[-1])')
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+      - name: Build and test
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project Bichi.xcodeproj -scheme Bichi \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED=NO > build.log 2>&1 || status=$?
+          # Surface compiler errors and test results; the full log is huge.
+          grep -E "error:|: error|Test Case .* failed|XCTAssert|Executed [0-9]+ test" build.log | sort -u | head -n 150 || true
+          tail -n 30 build.log
+          exit ${status:-0}
