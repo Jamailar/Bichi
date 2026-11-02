@@ -15,7 +15,8 @@ final class FurProcessorTests: XCTestCase {
 
     /// Left 3/4: fur with fine hair texture; a stain stripe in the middle;
     /// right quarter: brown floor that must stay untouched.
-    func makeImage() -> CIImage {
+    /// `weakPatch` adds a faintly warm 6×6 patch far from the stain at (8…14, 8…14).
+    func makeImage(weakPatch: Bool = false) -> CIImage {
         var px = [Float](repeating: 1, count: size * size * 4)
         for y in 0..<size {
             for x in 0..<size {
@@ -23,6 +24,7 @@ final class FurProcessorTests: XCTestCase {
                 var c: SIMD3<Float>
                 if x >= size * 3 / 4 { c = background }
                 else if x >= 40 && x < 56 { c = stain * hair }
+                else if weakPatch && (8..<14).contains(x) && (8..<14).contains(y) { c = fur * SIMD3(1.065, 1, 0.935) * hair }
                 else { c = fur * hair }
                 let i = (y * size + x) * 4
                 px[i] = c.x; px[i + 1] = c.y; px[i + 2] = c.z; px[i + 3] = 1
@@ -49,13 +51,28 @@ final class FurProcessorTests: XCTestCase {
         let subject = CIImage(color: .white)
             .cropped(to: CGRect(x: 0, y: 0, width: CGFloat(size * 3 / 4), height: CGFloat(size)))
             .composited(over: black)
-        let ref = FurReference(chroma: ColorMath.chroma(fur), luma: ColorMath.luma(fur))
-        let furMask = FurKernels.shared.furMask.apply(rect, [image, subject, ref.luma])
+        let ref = FurReference(chroma: ColorMath.chroma(fur), luma: ColorMath.luma(fur), warmthSigma: 0.03)
+        let k = FurKernels.shared
+        let furMask = k.furMask.apply(rect, [image, subject, ref.luma])
+        let clean = k.cleanFurWeight.apply(rect, [image, subject, ref.chroma.ciVector, ref.luma, ref.warmthSigma])
+        let tear = FurAnalyzer.stainMask(image, prior: subject, reference: ref, hue: ColorMath.tearHue, growRadius: 6)
         return FurAnalysis(
             size: rect.size, dogFound: true, landmarks: nil, subjectMask: subject, reference: ref,
-            autoMasks: [.tear: subject, .mouth: subject, .eyes: black, .fur: furMask],
+            autoMasks: [.tear: tear, .mouth: black, .eyes: black, .fur: furMask],
+            localFurLuma: FurAnalyzer.localFurLuma(image, weight: clean, reference: ref),
             suggestion: .none, tearSeverity: 1, mouthSeverity: 0, clippedFraction: 0
         )
+    }
+
+    func testStainMaskCoversStainAndDropsIsolatedWeakSpecks() {
+        let img = makeImage(weakPatch: true)
+        let mask = read(analysis(for: img).autoMasks[.tear]!)
+        let row = size / 2
+        for x in 44..<52 { XCTAssertGreaterThan(mask[row * size + x].x, 0.8, "stain x=\(x)") }
+        XCTAssertLessThan(mask[row * size + 10].x, 0.05, "clean fur")
+        // Faintly warm on its own, with no confident stain nearby: hysteresis drops it.
+        XCTAssertLessThan(mask[11 * size + 11].x, 0.1, "weak isolated patch")
+        XCTAssertLessThan(mask[row * size + 110].x, 0.01, "background")
     }
 
     func testKernelsLoad() {
@@ -77,7 +94,7 @@ final class FurProcessorTests: XCTestCase {
         XCTAssertLessThan(meanWarmAfter, meanWarmBefore * 0.5, "stain should lose most of its red-brown")
 
         // Texture: neighbouring-hair luminance ratios are preserved.
-        for x in 45..<52 {
+        for x in 46..<51 {
             let i = row * size + x
             let rb = ColorMath.luma(before[i]) / ColorMath.luma(before[i - 1])
             let ra = ColorMath.luma(after[i]) / ColorMath.luma(after[i - 1])

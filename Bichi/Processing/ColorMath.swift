@@ -1,3 +1,4 @@
+import Foundation
 import simd
 
 /// Pure-Swift mirror of the per-pixel math in `FurKernels.ci.metal`.
@@ -24,28 +25,40 @@ enum ColorMath {
         return t * t * (3 - 2 * t)
     }
 
-    /// How much a pixel looks like porphyrin / saliva staining on white fur:
-    /// warmer (red-brown or yellow-brown) than the clean fur reference, and
-    /// not dark enough to be an eye, nose or shadow.
-    static func stainProbability(_ rgb: SIMD3<Float>, furChroma: SIMD3<Float>, furLuma: Float) -> Float {
-        let c = chroma(rgb)
-        let warmth = (c.x - c.z) - (furChroma.x - furChroma.z)
-        let y = luma(rgb)
-        let warm = smoothstep(0.08, 0.35, warmth)
-        let notDark = smoothstep(0.06, 0.18, y / max(furLuma, 1e-3))
-        return warm * notDark
+    /// Opponent chroma: u = warm (R−B), v = green−magenta. Neutral is (0, 0).
+    static func opponent(_ c: SIMD3<Float>) -> SIMD2<Float> {
+        SIMD2(c.x - c.z, c.y - 0.5 * (c.x + c.z))
     }
 
-    /// Stain removal: pull chroma toward the target fur white and lift
-    /// luminance by a *ratio* (base → reference), which keeps every hair's
+    /// Hue windows for the stain-direction gate, radians from the warm axis.
+    /// Porphyrin (tears, saliva) is red-brown; food adds yellow-brown.
+    static let tearHue = SIMD2<Float>(-1.2, 0.25)
+    static let mouthHue = SIMD2<Float>(-1.2, 1.1)
+
+    /// Stain score against this dog's own clean-fur model: (soft, seed).
+    /// See `bichi::stainScore` in the Metal file.
+    static func stainScore(
+        _ rgb: SIMD3<Float>, furChroma: SIMD3<Float>, furLuma: Float, sigma: Float, hue: SIMD2<Float>
+    ) -> SIMD2<Float> {
+        let d = opponent(chroma(rgb)) - opponent(furChroma)
+        let z = d.x / max(sigma, 0.03)
+        let angle = atan2(d.y, max(d.x, 1e-4))
+        let hueGate = smoothstep(hue.x - 0.15, hue.x + 0.05, angle) * (1 - smoothstep(hue.y - 0.05, hue.y + 0.15, angle))
+        let notDark = smoothstep(0.06, 0.18, luma(rgb) / max(furLuma, 1e-3))
+        let g = hueGate * notDark
+        return SIMD2(smoothstep(2.5, 4.5, z) * g, smoothstep(5, 7, z) * g)
+    }
+
+    /// Stain removal: pull chroma toward the clean fur and lift luminance by
+    /// a *ratio* toward the local clean-fur level, which keeps every hair's
     /// relative brightness, i.e. the real texture. Nothing is painted in.
     static func destain(
         _ rgb: SIMD3<Float>, base: Float, amount: Float,
-        targetChroma: SIMD3<Float>, furLuma: Float, maxGain: Float
+        targetChroma: SIMD3<Float>, localFurLuma: Float, maxGain: Float
     ) -> SIMD3<Float> {
         let c = chroma(rgb)
         let y = luma(rgb)
-        let gain = simd_clamp(furLuma / max(base, 1e-4), 1, maxGain)
+        let gain = simd_clamp(localFurLuma / max(base, 1e-4), 1, maxGain)
         let newC = simd_mix(c, targetChroma, SIMD3(repeating: amount))
         let newY = y * (1 + (gain - 1) * amount)
         return newC * newY

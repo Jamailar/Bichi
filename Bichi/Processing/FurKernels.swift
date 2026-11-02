@@ -7,7 +7,15 @@ final class FurKernels {
     }()
 
     let luma: CIColorKernel
-    let stainProbability: CIColorKernel
+    let stainScore: CIColorKernel
+    let chromaMoments: CIColorKernel
+    let weightedLuma: CIColorKernel
+    let localFurLuma: CIColorKernel
+    let multiply: CIColorKernel
+    let guidedPack: CIColorKernel
+    let guidedSquare: CIColorKernel
+    let guidedCoeffs: CIColorKernel
+    let guidedApply: CIColorKernel
     let cleanFurWeight: CIColorKernel
     let furMask: CIColorKernel
     let clipped: CIColorKernel
@@ -25,7 +33,15 @@ final class FurKernels {
             try CIColorKernel(functionName: name, fromMetalLibraryData: data)
         }
         luma = try k("bichiLuma")
-        stainProbability = try k("bichiStainProbability")
+        stainScore = try k("bichiStainScore")
+        chromaMoments = try k("bichiChromaMoments")
+        weightedLuma = try k("bichiWeightedLuma")
+        localFurLuma = try k("bichiLocalFurLuma")
+        multiply = try k("bichiMultiply")
+        guidedPack = try k("bichiGuidedPack")
+        guidedSquare = try k("bichiGuidedSquare")
+        guidedCoeffs = try k("bichiGuidedCoeffs")
+        guidedApply = try k("bichiGuidedApply")
         cleanFurWeight = try k("bichiCleanFurWeight")
         furMask = try k("bichiFurMask")
         clipped = try k("bichiClipped")

@@ -35,14 +35,16 @@ enum FurProcessor {
             .applyingGaussianBlur(sigma: sigma)
             .cropped(to: extent)
 
+        let localFur = analysis.localFurLuma.clampedToExtent()
+            .transformed(by: CGAffineTransform(scaleX: extent.width / analysis.size.width, y: extent.height / analysis.size.height))
+            .cropped(to: extent)
+
         var out = src
         if p.tear > 0.001 {
-            out = k.destain.apply(extent, [out, base, mask(.tear), Float(p.tear),
-                                           ref.chroma.ciVector, ref.chroma.ciVector, ref.luma, maxStainGain])
+            out = k.destain.apply(extent, [out, base, mask(.tear), localFur, Float(p.tear), ref.chroma.ciVector, maxStainGain])
         }
         if p.mouth > 0.001 {
-            out = k.destain.apply(extent, [out, base, mask(.mouth), Float(p.mouth),
-                                           ref.chroma.ciVector, ref.chroma.ciVector, ref.luma, maxStainGain])
+            out = k.destain.apply(extent, [out, base, mask(.mouth), localFur, Float(p.mouth), ref.chroma.ciVector, maxStainGain])
         }
         let fur = (p.highlight > 0.001 || p.whiten > 0.001) ? mask(.fur) : nil
         if p.highlight > 0.001, let fur {

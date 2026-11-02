@@ -10,17 +10,36 @@ final class ColorMathTests: XCTestCase {
     var furChroma: SIMD3<Float> { ColorMath.chroma(fur) }
     var furLuma: Float { ColorMath.luma(fur) }
 
-    func testStainProbabilitySeparatesStainFromFur() {
-        XCTAssertLessThan(ColorMath.stainProbability(fur, furChroma: furChroma, furLuma: furLuma), 0.05)
-        XCTAssertGreaterThan(ColorMath.stainProbability(stain, furChroma: furChroma, furLuma: furLuma), 0.8)
+    func score(_ rgb: SIMD3<Float>, sigma: Float = 0.03, hue: SIMD2<Float> = ColorMath.tearHue) -> SIMD2<Float> {
+        ColorMath.stainScore(rgb, furChroma: furChroma, furLuma: furLuma, sigma: sigma, hue: hue)
+    }
+
+    func testStainScoreSeparatesStainFromFur() {
+        XCTAssertLessThan(score(fur).x, 0.05)
+        XCTAssertGreaterThan(score(stain).x, 0.8)
+        XCTAssertGreaterThan(score(stain).y, 0.8, "a strong stain is also a seed")
         // A black nose is not a stain.
-        let nose = SIMD3<Float>(0.02, 0.018, 0.016)
-        XCTAssertLessThan(ColorMath.stainProbability(nose, furChroma: furChroma, furLuma: furLuma), 0.05)
+        XCTAssertLessThan(score(SIMD3<Float>(0.02, 0.018, 0.016)).x, 0.05)
+    }
+
+    func testHueSeparatesRedTearFromYellowFood() {
+        let food = SIMD3<Float>(0.6, 0.55, 0.25)
+        XCTAssertLessThan(score(food, hue: ColorMath.tearHue).x, 0.05, "yellow is not a tear stain")
+        XCTAssertGreaterThan(score(food, hue: ColorMath.mouthHue).x, 0.8, "but it is a mouth stain")
+        XCTAssertGreaterThan(score(stain, hue: ColorMath.mouthHue).x, 0.8)
+    }
+
+    func testThresholdAdaptsToEachDogsSpread() {
+        // Slightly warmer patch: a stain on a uniform white dog, normal
+        // variation on a dog whose coat is naturally uneven cream.
+        let patch = fur * SIMD3<Float>(1.065, 1, 0.935)
+        XCTAssertGreaterThan(score(patch, sigma: 0.03).x, 0.5)
+        XCTAssertLessThan(score(patch, sigma: 0.1).x, 0.05)
     }
 
     func testDestainMovesTowardFurAndKeepsTexture() {
         let base = ColorMath.luma(stain)
-        let out = ColorMath.destain(stain, base: base, amount: 1, targetChroma: furChroma, furLuma: furLuma, maxGain: 1.6)
+        let out = ColorMath.destain(stain, base: base, amount: 1, targetChroma: furChroma, localFurLuma: furLuma, maxGain: 1.6)
         let warmthBefore = ColorMath.chroma(stain).x - ColorMath.chroma(stain).z
         let warmthAfter = ColorMath.chroma(out).x - ColorMath.chroma(out).z
         XCTAssertEqual(warmthAfter, furChroma.x - furChroma.z, accuracy: 0.01)
@@ -28,12 +47,12 @@ final class ColorMathTests: XCTestCase {
 
         // Two neighbouring hairs, one 20% brighter: the ratio must survive.
         let bright = stain * 1.2
-        let outBright = ColorMath.destain(bright, base: base, amount: 1, targetChroma: furChroma, furLuma: furLuma, maxGain: 1.6)
+        let outBright = ColorMath.destain(bright, base: base, amount: 1, targetChroma: furChroma, localFurLuma: furLuma, maxGain: 1.6)
         XCTAssertEqual(ColorMath.luma(outBright) / ColorMath.luma(out), 1.2, accuracy: 0.001)
     }
 
     func testDestainZeroAmountIsIdentity() {
-        let out = ColorMath.destain(stain, base: 0.3, amount: 0, targetChroma: furChroma, furLuma: furLuma, maxGain: 1.6)
+        let out = ColorMath.destain(stain, base: 0.3, amount: 0, targetChroma: furChroma, localFurLuma: furLuma, maxGain: 1.6)
         XCTAssertEqual(simd_distance(out, stain), 0, accuracy: 1e-5)
     }
 
