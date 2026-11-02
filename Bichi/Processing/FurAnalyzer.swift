@@ -19,6 +19,10 @@ struct DogLandmarks: Equatable {
 struct FurReference: Equatable {
     var chroma: SIMD3<Float>
     var luma: Float
+    /// Spread of clean-fur warmth (opponent u) for this dog. Stains are
+    /// judged in units of it, so a cream dog and a paper-white dog each get
+    /// their own threshold.
+    var warmthSigma: Float = 0.05
     static let neutral = FurReference(chroma: .one, luma: 0.6)
 }
 
@@ -32,6 +36,8 @@ struct FurAnalysis {
     let reference: FurReference
     /// Automatic masks per region, before the user's brush strokes.
     let autoMasks: [RetouchRegion: CIImage]
+    /// Local clean-fur luminance (low frequency), the lift target for stains.
+    let localFurLuma: CIImage
     let suggestion: RetouchParameters
     let tearSeverity: Float
     let mouthSeverity: Float
@@ -62,32 +68,49 @@ enum FurAnalyzer {
         let subject = subjectMask(instances.results?.first, dogBox: dogBox, handler: handler, size: size)
         let landmarks = pose.results.flatMap { bestLandmarks($0, near: dogBox) }
 
-        // Two passes: a rough reference to find stains, then the reference from
-        // clean fur only (stains and shadows would bias it warm/dark).
+        // Per-dog colour model from clean fur, two passes: a rough model to
+        // find stains, then mean and spread from clean fur only (stains and
+        // shadows would bias it warm/dark and inflate the spread).
         var reference = FurReference.neutral
+        var weight = subject
         for _ in 0..<2 {
-            let w = k.cleanFurWeight.apply(small.extent, [small, subject, reference.chroma.ciVector, reference.luma])
-            if let mean = weightedMean(small, weight: w, context: context) {
-                let y = ColorMath.luma(mean)
-                if y > 0.02 { reference = FurReference(chroma: ColorMath.chroma(mean), luma: y) }
+            weight = k.cleanFurWeight.apply(small.extent, [small, subject, reference.chroma.ciVector, reference.luma, reference.warmthSigma])
+            guard let mean = weightedMean(small, weight: weight, context: context) else { break }
+            let y = ColorMath.luma(mean)
+            guard y > 0.02 else { break }
+            var next = FurReference(chroma: ColorMath.chroma(mean), luma: y)
+            if let m = weightedMean(k.chromaMoments.apply(small.extent, [small]), weight: weight, context: context) {
+                next.warmthSigma = max(sqrt(max(m.z - m.x * m.x, 0)), 0.03)
             }
+            reference = next
         }
+        let localFur = localFurLuma(small, weight: weight, reference: reference)
 
         let fur = k.furMask.apply(small.extent, [small, subject, reference.luma])
         var masks: [RetouchRegion: CIImage] = [.fur: fur]
+        var tearSeverity: Float = 0, mouthSeverity: Float = 0
         if let lm = landmarks {
             let priors = regionPriors(lm, size: size)
+            let d = lm.eyeDistance(aspect: size.width / size.height) * size.width
             for (region, prior) in priors {
-                masks[region] = prior.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: subject])
+                let p = prior.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: subject])
+                switch region {
+                case .tear, .mouth:
+                    let m = stainMask(small, prior: p, reference: reference,
+                                      hue: region == .tear ? ColorMath.tearHue : ColorMath.mouthHue,
+                                      growRadius: d * 0.12)
+                    masks[region] = m
+                    let severity = weightedMean(m, weight: p, context: context)?.x ?? 0
+                    if region == .tear { tearSeverity = severity } else { mouthSeverity = severity }
+                default:
+                    masks[region] = p
+                }
             }
         } else {
             let empty = CIImage(color: .black).cropped(to: small.extent)
             masks[.tear] = empty; masks[.mouth] = empty; masks[.eyes] = empty
         }
 
-        let stain = k.stainProbability.apply(small.extent, [small, reference.chroma.ciVector, reference.luma])
-        let tearSeverity = landmarks == nil ? 0 : weightedMean(stain, weight: masks[.tear]!, context: context).map { $0.x } ?? 0
-        let mouthSeverity = landmarks == nil ? 0 : weightedMean(stain, weight: masks[.mouth]!, context: context).map { $0.x } ?? 0
         let clipped = weightedMean(k.clipped.apply(small.extent, [small]), weight: subject, context: context)?.x ?? 0
 
         let suggestion = suggest(
@@ -96,7 +119,7 @@ enum FurAnalyzer {
         )
         return FurAnalysis(
             size: size, dogFound: dogBox != nil, landmarks: landmarks, subjectMask: subject,
-            reference: reference, autoMasks: masks, suggestion: suggestion,
+            reference: reference, autoMasks: masks, localFurLuma: localFur, suggestion: suggestion,
             tearSeverity: tearSeverity, mouthSeverity: mouthSeverity, clippedFraction: clipped
         )
     }
@@ -113,6 +136,58 @@ enum FurAnalyzer {
         p.highlight = clamp(0.3 + clipped * 20, 0.3, 0.8)
         p.eyes = hasLandmarks ? 0.5 : 0
         return p
+    }
+
+    // MARK: - Stain masks
+
+    /// Precise stain mask inside a location prior, built the way portrait
+    /// retouching builds skin/blemish masks:
+    /// 1. per-pixel membership against this dog's colour model (soft + seed);
+    /// 2. hysteresis: soft pixels count only near a confident seed, which
+    ///    grows the stain from its core and drops isolated warm specks;
+    /// 3. guided filter with luminance as the guide so the edge follows hairs.
+    static func stainMask(_ image: CIImage, prior: CIImage, reference: FurReference,
+                          hue: SIMD2<Float>, growRadius: CGFloat) -> CIImage {
+        let k = FurKernels.shared
+        let rect = image.extent
+        let score = k.stainScore.apply(rect, [image, reference.chroma.ciVector, reference.luma,
+                                              reference.warmthSigma, CIVector(x: CGFloat(hue.x), y: CGFloat(hue.y))])
+        let soft = k.multiply.apply(rect, [score, prior])
+        let seed = k.multiply.apply(rect, [
+            score.applyingFilter("CIColorMatrix", parameters: ["inputRVector": CIVector(x: 0, y: 1, z: 0, w: 0)]),
+            prior,
+        ])
+        let grownSeed = seed.clampedToExtent()
+            .applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: max(growRadius, 2)])
+            .applyingGaussianBlur(sigma: max(growRadius * 0.3, 1))
+            .cropped(to: rect)
+        let grown = k.multiply.apply(rect, [soft, grownSeed.applyingFilter("CIColorClamp")])
+        let guide = k.luma.apply(rect, [image])
+        let radius = max(rect.width * 0.004, 3)
+        return guidedFilter(grown, guide: guide, radius: radius, eps: 1e-3)
+    }
+
+    /// He et al. guided filter, built from box blurs.
+    static func guidedFilter(_ p: CIImage, guide: CIImage, radius: CGFloat, eps: Float) -> CIImage {
+        let k = FurKernels.shared
+        let rect = p.extent
+        func box(_ img: CIImage) -> CIImage {
+            img.clampedToExtent().applyingFilter("CIBoxBlur", parameters: [kCIInputRadiusKey: radius]).cropped(to: rect)
+        }
+        let m = box(k.guidedPack.apply(rect, [guide, p]))
+        let mii = box(k.guidedSquare.apply(rect, [guide]))
+        let ab = box(k.guidedCoeffs.apply(rect, [m, mii, eps]))
+        return k.guidedApply.apply(rect, [guide, ab])
+    }
+
+    /// Low-frequency clean-fur luminance: blur(luma·w) / blur(w).
+    static func localFurLuma(_ image: CIImage, weight: CIImage, reference: FurReference) -> CIImage {
+        let k = FurKernels.shared
+        let rect = image.extent
+        let sigma = max(rect.width, rect.height) * 0.03
+        let blurred = k.weightedLuma.apply(rect, [image, weight])
+            .clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: rect)
+        return k.localFurLuma.apply(rect, [blurred, reference.luma])
     }
 
     // MARK: - Region priors
